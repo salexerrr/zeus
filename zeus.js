@@ -135,7 +135,12 @@ const Router = {
 		}
 
 		return new Response(HTML_TEMPLATES.panel, {
-			headers: { "Content-Type": "text/html; charset=utf-8" },
+    		headers: {
+        		"Content-Type": "text/html; charset=utf-8",
+        		"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        		"Pragma": "no-cache",
+        		"Expires": "0"
+    		},
 		});
 	},
 
@@ -242,7 +247,13 @@ const Router = {
 				return new Response(JSON.stringify({ error: "توکن یا اکانت آیدی کلودفلر تنظیم نشده است. لطفا با سایت زیر اپدیت کنید https://zeus-panel.ir-netlify.workers.dev/" }), { status: 400, headers: { "Content-Type": "application/json" } });
 			}
 			try {
-				const githubRes = await fetch("https://raw.githubusercontent.com/IR-NETLIFY/zeus/refs/heads/main/zeus.js?t=" + Date.now());
+				const githubRes = await fetch("https://raw.githubusercontent.com/IR-NETLIFY/zeus/refs/heads/main/zeus.js?t=" + Date.now() + Math.random(), {
+    				headers: {
+        				"Cache-Control": "no-cache, no-store, must-revalidate",
+        				"Pragma": "no-cache",
+        				"Expires": "0"
+    				}
+				});
 				if (!githubRes.ok) throw new Error("خطا در دریافت سورس جدید از گیت‌هاب");
 				const newCode = await githubRes.text();
 				const scriptName = env.WORKER_NAME || url.hostname.split(".")[0];
@@ -2275,7 +2286,7 @@ const HTML_TEMPLATES = {
             <div class="flex flex-row flex-wrap justify-center items-center gap-3 w-full md:w-auto">
                 <h1 class="text-lg font-bold flex items-center gap-2" dir="ltr">
                     ZEUS Panel 
-                    <span id="panel-version" class="text-xs px-2 py-0.5 font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">v1.4.5</span>
+                    <span id="panel-version" class="text-xs px-2 py-0.5 font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">v1.2.5</span>
                 </h1>
                 <div class="flex items-center gap-3 bg-gray-100 dark:bg-zinc-800/60 px-3 py-1.5 rounded-full border border-gray-200 dark:border-zinc-800/80 shadow-sm flex-shrink-0 w-fit">
                     <a href="https://github.com/IR-NETLIFY/zeus" target="_blank" rel="noopener noreferrer" class="text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition-all transform hover:scale-125 duration-200 flex-shrink-0" title="GitHub">
@@ -3884,7 +3895,7 @@ function editUser(encodedUsername) {
                 window.location.reload();
             }
         }
-const CURRENT_VERSION = '1.4.5';
+const CURRENT_VERSION = '1.4.6';
 const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
 
 		async function checkForUpdates(isManual = false) {
@@ -3932,8 +3943,10 @@ const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
                 const data = await res.json();
                 
                 if (res.ok && data.success) {
-                    alert('پنل با موفقیت به آخرین نسخه آپدیت شد! صفحه اکنون رفرش می‌شود.');
-                    window.location.reload();
+                    alert('پنل با موفقیت به آخرین نسخه آپدیت شد! در حال راه‌اندازی مجدد پنل (لطفاً ۵ ثانیه صبر کنید)...');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
                 } else {
                     alert('خطا در بروزرسانی لطفا با لینک زیر آپدیت کنید https://zeus-panel.ir-netlify.workers.dev/' + (data.error || 'نامشخص'));
                     btn.disabled = false;
