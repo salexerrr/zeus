@@ -22,7 +22,18 @@ export default {
 	async fetch(request, env, ctx) {
 		trackRequest(env, ctx);
 		await DbService.ensureSchema(env.DB);
+		if (env.TELEGRAM_BOT_TOKEN) {
+			try {
+				await TelegramBot.ensureSchema(env.DB);
+			} catch (e) {}
+		}
 		const url = new URL(request.url);
+		if (request.method === "POST" && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_WEBHOOK_SECRET && url.pathname === "/tg/" + env.TELEGRAM_WEBHOOK_SECRET) {
+			return await TelegramBot.handleUpdate(request, env, ctx);
+		}
+		if (request.method === "GET" && url.pathname === "/tg-login") {
+			return await TelegramBot.handleMagicLogin(url, env);
+		}
 		if (Router.isWebSocketUpgrade(request) && url.pathname === "/In_Panel_Rayeghan_Ast_Va_Gheyre_Ghabele_Foroosh") {
 			return await Router.handleWebSocket(request, env, ctx);
 		}
@@ -285,60 +296,7 @@ const Router = {
 					if (!accData.success || accData.result.length === 0) throw new Error("توکن نامعتبر است یا اکانتی یافت نشد.");
 					currentAccountId = accData.result[0].id;
 				}
-
-				const githubRes = await fetch("https://raw.githubusercontent.com/IR-NETLIFY/zeus/refs/heads/main/zeus.js?t=" + Date.now() + Math.random(), {
-					headers: {
-						"Cache-Control": "no-cache, no-store, must-revalidate",
-						Pragma: "no-cache",
-						Expires: "0",
-					},
-				});
-				if (!githubRes.ok) throw new Error("خطا در دریافت سورس جدید از گیت‌هاب");
-				const newCode = await githubRes.text();
-
-				const scriptName = env.WORKER_NAME || url.hostname.split(".")[0];
-				const bindingsRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${currentAccountId}/workers/scripts/${scriptName}/bindings`, {
-					headers: { Authorization: "Bearer " + currentToken },
-				});
-				const bindingsData = await bindingsRes.json();
-				if (!bindingsData.success) throw new Error("عدم دسترسی به تنظیمات ورکر. توکن نامعتبر است.");
-
-				const newBindings = [];
-				for (const b of bindingsData.result) {
-					if (b.type === "d1") {
-						newBindings.push({ type: "d1", name: b.name, id: b.database_id || b.id });
-					} else if (b.name === "CF_API_TOKEN") {
-						newBindings.push({ type: "secret_text", name: "CF_API_TOKEN", text: currentToken });
-					} else if (b.name === "CF_ACCOUNT_ID") {
-						newBindings.push({ type: "secret_text", name: "CF_ACCOUNT_ID", text: currentAccountId });
-					}
-				}
-
-				if (!newBindings.some((b) => b.name === "CF_API_TOKEN")) {
-					newBindings.push({ type: "secret_text", name: "CF_API_TOKEN", text: currentToken });
-				}
-				if (!newBindings.some((b) => b.name === "CF_ACCOUNT_ID")) {
-					newBindings.push({ type: "secret_text", name: "CF_ACCOUNT_ID", text: currentAccountId });
-				}
-
-				const metadata = {
-					main_module: "zeus.js",
-					compatibility_date: "2024-02-08",
-					bindings: newBindings,
-				};
-
-				const formData = new FormData();
-				formData.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-				formData.append("zeus.js", new Blob([newCode], { type: "application/javascript+module" }), "zeus.js");
-
-				const deployRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${currentAccountId}/workers/scripts/${scriptName}`, {
-					method: "PUT",
-					headers: { Authorization: "Bearer " + currentToken },
-					body: formData,
-				});
-				const deployData = await deployRes.json();
-				if (!deployData.success) throw new Error("خطا در اعمال آپدیت در کلودفلر.");
-
+				await DeployService.redeployLatest(url.hostname, env, currentToken, currentAccountId);
 				return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
 			} catch (err) {
 				const errorMsg = err.message + " | در صورت عدم موفقیت، از طریق لینک زیر آپدیت کنید: https://zeus-panel.ir-netlify.workers.dev/";
@@ -354,51 +312,7 @@ const Router = {
 			}
 
 			try {
-				const githubRes = await fetch("https://raw.githubusercontent.com/IR-NETLIFY/zeus/refs/heads/main/zeus.js?t=" + Date.now(), {
-					headers: {
-						"Cache-Control": "no-cache, no-store, must-revalidate",
-						Pragma: "no-cache",
-						Expires: "0",
-					},
-				});
-				if (!githubRes.ok) throw new Error("خطا در دریافت سورس از گیت‌هاب");
-				const newCode = await githubRes.text();
-
-				const scriptName = env.WORKER_NAME || url.hostname.split(".")[0];
-				const bindingsRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${currentAccountId}/workers/scripts/${scriptName}/bindings`, {
-					headers: { Authorization: "Bearer " + currentToken },
-				});
-				const bindingsData = await bindingsRes.json();
-				if (!bindingsData.success) throw new Error("عدم دسترسی به تنظیمات ورکر");
-
-				const newBindings = [];
-				for (const b of bindingsData.result) {
-					if (b.type === "d1") {
-						newBindings.push({ type: "d1", name: b.name, id: b.database_id || b.id });
-					}
-				}
-
-				newBindings.push({ type: "secret_text", name: "CF_API_TOKEN", text: currentToken });
-				newBindings.push({ type: "secret_text", name: "CF_ACCOUNT_ID", text: currentAccountId });
-
-				const metadata = {
-					main_module: "zeus.js",
-					compatibility_date: "2024-02-08",
-					bindings: newBindings,
-				};
-
-				const formData = new FormData();
-				formData.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-				formData.append("zeus.js", new Blob([newCode], { type: "application/javascript+module" }), "zeus.js");
-
-				const deployRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${currentAccountId}/workers/scripts/${scriptName}`, {
-					method: "PUT",
-					headers: { Authorization: "Bearer " + currentToken },
-					body: formData,
-				});
-				const deployData = await deployRes.json();
-				if (!deployData.success) throw new Error("خطا در اعمال ری‌استارت در کلودفلر");
-
+				await DeployService.redeployLatest(url.hostname, env, currentToken, currentAccountId);
 				return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
 			} catch (err) {
 				return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
@@ -577,9 +491,6 @@ const Router = {
 					const { username, uuid, limit_gb, expiry_days, limit_req, ips, tls, port, fingerprint, ip_limit, used_gb, used_req, created_at, is_active, block_porn, block_ads, frag_len, frag_int } = await request.json();
 					if (!username) {
 						return new Response(JSON.stringify({ error: "نام کاربری اجباری است" }), { status: 400, headers: { "Content-Type": "application/json" } });
-					}
-					if (username.length > 32) {
-						return new Response(JSON.stringify({ error: "نام کاربری نمی‌تواند بیشتر از ۳۲ کاراکتر باشد" }), { status: 400, headers: { "Content-Type": "application/json" } });
 					}
 					const finalUuid = uuid || crypto.randomUUID();
 					const parsedUsedGb = parseFloat(used_gb);
@@ -788,6 +699,655 @@ const SubscriptionService = {
 				"Subscription-Userinfo": subUserInfo,
 			},
 		});
+	},
+};
+const DeployService = {
+	getSourceUrl(env) {
+		const custom = (env.UPDATE_SOURCE_URL || "").trim();
+		if (custom) return custom;
+		return "https://raw.githubusercontent.com/IR-NETLIFY/zeus/refs/heads/main/zeus.js";
+	},
+	async redeployLatest(hostname, env, currentToken, currentAccountId) {
+		const sourceUrl = this.getSourceUrl(env);
+		const sep = sourceUrl.includes("?") ? "&" : "?";
+		const githubRes = await fetch(sourceUrl + sep + "t=" + Date.now() + Math.random(), {
+			headers: {
+				"Cache-Control": "no-cache, no-store, must-revalidate",
+				Pragma: "no-cache",
+				Expires: "0",
+			},
+		});
+		if (!githubRes.ok) throw new Error("خطا در دریافت سورس جدید از مخزن تعریف‌شده (" + sourceUrl + ")");
+		const newCode = await githubRes.text();
+		const scriptName = env.WORKER_NAME || hostname.split(".")[0];
+		const bindingsRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${currentAccountId}/workers/scripts/${scriptName}/bindings`, {
+			headers: { Authorization: "Bearer " + currentToken },
+		});
+		const bindingsData = await bindingsRes.json();
+		if (!bindingsData.success) throw new Error("عدم دسترسی به تنظیمات ورکر. توکن نامعتبر است.");
+
+		const newBindings = [];
+		for (const b of bindingsData.result) {
+			if (b.type === "d1") {
+				newBindings.push({ type: "d1", name: b.name, id: b.database_id || b.id });
+			} else if (b.name === "CF_API_TOKEN") {
+				newBindings.push({ type: "secret_text", name: "CF_API_TOKEN", text: currentToken });
+			} else if (b.name === "CF_ACCOUNT_ID") {
+				newBindings.push({ type: "secret_text", name: "CF_ACCOUNT_ID", text: currentAccountId });
+			} else if (b.name === "TELEGRAM_BOT_TOKEN" && env.TELEGRAM_BOT_TOKEN) {
+				newBindings.push({ type: "secret_text", name: "TELEGRAM_BOT_TOKEN", text: env.TELEGRAM_BOT_TOKEN });
+			} else if (b.name === "TELEGRAM_WEBHOOK_SECRET" && env.TELEGRAM_WEBHOOK_SECRET) {
+				newBindings.push({ type: "secret_text", name: "TELEGRAM_WEBHOOK_SECRET", text: env.TELEGRAM_WEBHOOK_SECRET });
+			} else if (b.name === "TELEGRAM_ADMIN_IDS" && env.TELEGRAM_ADMIN_IDS) {
+				newBindings.push({ type: "secret_text", name: "TELEGRAM_ADMIN_IDS", text: env.TELEGRAM_ADMIN_IDS });
+			} else if (b.name === "WORKER_NAME" && env.WORKER_NAME) {
+				newBindings.push({ type: "secret_text", name: "WORKER_NAME", text: env.WORKER_NAME });
+			} else if (b.name === "UPDATE_SOURCE_URL" && env.UPDATE_SOURCE_URL) {
+				newBindings.push({ type: "secret_text", name: "UPDATE_SOURCE_URL", text: env.UPDATE_SOURCE_URL });
+			}
+		}
+
+		const ensureBinding = (name, value) => {
+			if (value && !newBindings.some((b) => b.name === name)) {
+				newBindings.push({ type: "secret_text", name, text: value });
+			}
+		};
+		ensureBinding("CF_API_TOKEN", currentToken);
+		ensureBinding("CF_ACCOUNT_ID", currentAccountId);
+		ensureBinding("TELEGRAM_BOT_TOKEN", env.TELEGRAM_BOT_TOKEN);
+		ensureBinding("TELEGRAM_WEBHOOK_SECRET", env.TELEGRAM_WEBHOOK_SECRET);
+		ensureBinding("TELEGRAM_ADMIN_IDS", env.TELEGRAM_ADMIN_IDS);
+		ensureBinding("WORKER_NAME", env.WORKER_NAME);
+		ensureBinding("UPDATE_SOURCE_URL", env.UPDATE_SOURCE_URL);
+
+		const metadata = {
+			main_module: "zeus.js",
+			compatibility_date: "2024-02-08",
+			bindings: newBindings,
+		};
+
+		const formData = new FormData();
+		formData.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+		formData.append("zeus.js", new Blob([newCode], { type: "application/javascript+module" }), "zeus.js");
+
+		const deployRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${currentAccountId}/workers/scripts/${scriptName}`, {
+			method: "PUT",
+			headers: { Authorization: "Bearer " + currentToken },
+			body: formData,
+		});
+		const deployData = await deployRes.json();
+		if (!deployData.success) throw new Error("خطا در اعمال بروزرسانی/ری‌استارت در کلودفلر.");
+		return true;
+	},
+};
+const TelegramBot = {
+	async ensureSchema(db) {
+		try {
+			await db
+				.prepare(
+					`CREATE TABLE IF NOT EXISTS tg_sessions (
+						chat_id TEXT PRIMARY KEY,
+						state TEXT,
+						data TEXT,
+						updated_at INTEGER
+					)`,
+				)
+				.run();
+		} catch (e) {}
+		try {
+			await db.prepare("CREATE TABLE IF NOT EXISTS tg_links (chat_id TEXT PRIMARY KEY, token TEXT, created_at INTEGER)").run();
+		} catch (e) {}
+	},
+	getAdminIds(env) {
+		return String(env.TELEGRAM_ADMIN_IDS || "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	},
+	isAdmin(env, chatId) {
+		const admins = this.getAdminIds(env);
+		if (admins.length === 0) return false;
+		return admins.includes(String(chatId));
+	},
+	apiUrl(env, method) {
+		return `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
+	},
+	async callApi(env, method, payload) {
+		try {
+			const res = await fetch(this.apiUrl(env, method), {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			return await res.json();
+		} catch (e) {
+			return { ok: false, error: e.message };
+		}
+	},
+	async sendMessage(env, chatId, text, options = {}) {
+		return this.callApi(env, "sendMessage", {
+			chat_id: chatId,
+			text,
+			parse_mode: "HTML",
+			disable_web_page_preview: true,
+			...options,
+		});
+	},
+	async answerCallback(env, callbackQueryId, text = "", showAlert = false) {
+		return this.callApi(env, "answerCallbackQuery", {
+			callback_query_id: callbackQueryId,
+			text,
+			show_alert: showAlert,
+		});
+	},
+	async getSession(db, chatId) {
+		try {
+			const row = await db.prepare("SELECT state, data FROM tg_sessions WHERE chat_id = ?").bind(String(chatId)).first();
+			if (!row) return { state: null, data: {} };
+			let data = {};
+			try {
+				data = JSON.parse(row.data || "{}");
+			} catch (e) {}
+			return { state: row.state, data };
+		} catch (e) {
+			return { state: null, data: {} };
+		}
+	},
+	async setSession(db, chatId, state, data = {}) {
+		try {
+			await db
+				.prepare("INSERT INTO tg_sessions (chat_id, state, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET state = ?, data = ?, updated_at = ?")
+				.bind(String(chatId), state, JSON.stringify(data), Date.now(), state, JSON.stringify(data), Date.now())
+				.run();
+		} catch (e) {}
+	},
+	async clearSession(db, chatId) {
+		try {
+			await db.prepare("DELETE FROM tg_sessions WHERE chat_id = ?").bind(String(chatId)).run();
+		} catch (e) {}
+	},
+	mainMenuKeyboard() {
+		return {
+			inline_keyboard: [
+				[
+					{ text: "👥 لیست کاربران", callback_data: "users_list_0" },
+					{ text: "➕ ساخت کاربر", callback_data: "user_new" },
+				],
+				[
+					{ text: "📊 آمار پنل", callback_data: "stats" },
+					{ text: "🌐 پروکسی آی‌پی", callback_data: "proxy_menu" },
+				],
+				[
+					{ text: "🔐 ورود به پنل وب", callback_data: "web_login" },
+					{ text: "🔁 ری‌استارت هسته", callback_data: "restart_core" },
+				],
+				[{ text: "⬆️ بروزرسانی پنل", callback_data: "update_panel" }],
+			],
+		};
+	},
+	async handleMagicLogin(url, env) {
+		const token = url.searchParams.get("token") || "";
+		if (!token) return new Response("Invalid link", { status: 400 });
+		try {
+			const row = await env.DB.prepare("SELECT chat_id, created_at FROM tg_links WHERE token = ?").bind(token).first();
+			if (!row) return new Response("Link expired or invalid. Ask the bot for a new login link.", { status: 400 });
+			if (Date.now() - row.created_at > 5 * 60 * 1000) {
+				await env.DB.prepare("DELETE FROM tg_links WHERE token = ?").bind(token).run();
+				return new Response("Link expired. Ask the bot for a new login link.", { status: 400 });
+			}
+			await env.DB.prepare("DELETE FROM tg_links WHERE token = ?").bind(token).run();
+			const storedHash = await DbService.getPanelPassword(env.DB);
+			if (!storedHash) {
+				return Response.redirect(url.origin + "/panel", 302);
+			}
+			return new Response(null, {
+				status: 302,
+				headers: {
+					Location: url.origin + "/panel",
+					"Set-Cookie": "panel_session=" + storedHash + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600",
+				},
+			});
+		} catch (e) {
+			return new Response("Error: " + e.message, { status: 500 });
+		}
+	},
+	async handleUpdate(request, env, ctx) {
+		let update;
+		try {
+			update = await request.json();
+		} catch (e) {
+			return new Response("ok");
+		}
+		try {
+			if (update.callback_query) {
+				await this.onCallbackQuery(update.callback_query, env, ctx);
+			} else if (update.message) {
+				await this.onMessage(update.message, env, ctx);
+			}
+		} catch (e) {
+			console.error("TelegramBot error: " + e.message);
+		}
+		return new Response("ok");
+	},
+	async onMessage(message, env, ctx) {
+		const chatId = message.chat.id;
+		const text = (message.text || "").trim();
+		if (!this.isAdmin(env, chatId)) {
+			await this.sendMessage(env, chatId, "⛔️ شما اجازه دسترسی به این ربات را ندارید.\nChat ID شما: <code>" + chatId + "</code>\nاگر مدیر پنل هستید، این عدد را در متغیر TELEGRAM_ADMIN_IDS ورکر قرار دهید.");
+			return;
+		}
+		if (text === "/start" || text === "/menu") {
+			await this.clearSession(env.DB, chatId);
+			await this.sendMessage(env, chatId, "⚡️ <b>به ربات مدیریت ZEUS Panel خوش آمدید</b>\n\nاز دکمه‌های زیر برای مدیریت پنل استفاده کنید:", { reply_markup: this.mainMenuKeyboard() });
+			return;
+		}
+		if (text === "/cancel") {
+			await this.clearSession(env.DB, chatId);
+			await this.sendMessage(env, chatId, "عملیات لغو شد.", { reply_markup: this.mainMenuKeyboard() });
+			return;
+		}
+		const session = await this.getSession(env.DB, chatId);
+		if (session.state) {
+			await this.handleStatefulInput(chatId, text, session, env, ctx);
+			return;
+		}
+		await this.sendMessage(env, chatId, "برای شروع از منو استفاده کنید:", { reply_markup: this.mainMenuKeyboard() });
+	},
+	async onCallbackQuery(cb, env, ctx) {
+		const chatId = cb.message.chat.id;
+		const messageId = cb.message.message_id;
+		const data = cb.data || "";
+		if (!this.isAdmin(env, chatId)) {
+			await this.answerCallback(env, cb.id, "⛔️ دسترسی غیرمجاز", true);
+			return;
+		}
+		await this.answerCallback(env, cb.id);
+		if (data === "menu") {
+			await this.clearSession(env.DB, chatId);
+			await this.editOrSend(env, chatId, messageId, "⚡️ <b>منوی اصلی ZEUS Panel</b>", this.mainMenuKeyboard());
+			return;
+		}
+		if (data === "stats") {
+			await this.showStats(chatId, messageId, env);
+			return;
+		}
+		if (data.startsWith("users_list_")) {
+			const page = parseInt(data.replace("users_list_", ""), 10) || 0;
+			await this.showUsersList(chatId, messageId, env, page);
+			return;
+		}
+		if (data.startsWith("user_view_")) {
+			const username = decodeURIComponent(data.replace("user_view_", ""));
+			await this.showUserDetail(chatId, messageId, env, username);
+			return;
+		}
+		if (data.startsWith("user_toggle_")) {
+			const username = decodeURIComponent(data.replace("user_toggle_", ""));
+			await env.DB.prepare("UPDATE users SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE username = ?").bind(username).run();
+			await this.showUserDetail(chatId, messageId, env, username);
+			return;
+		}
+		if (data.startsWith("user_reset_volume_")) {
+			const username = decodeURIComponent(data.replace("user_reset_volume_", ""));
+			await env.DB.prepare("UPDATE users SET used_gb = 0 WHERE username = ?").bind(username).run();
+			GLOBAL_TRAFFIC_CACHE.set(username, 0);
+			await this.answerAndRefreshUser(env, chatId, messageId, username, "✅ حجم مصرفی ریست شد.");
+			return;
+		}
+		if (data.startsWith("user_reset_req_")) {
+			const username = decodeURIComponent(data.replace("user_reset_req_", ""));
+			await env.DB.prepare("UPDATE users SET used_req = 0 WHERE username = ?").bind(username).run();
+			USER_REQ_CACHE.set(username, 0);
+			await this.answerAndRefreshUser(env, chatId, messageId, username, "✅ ریکوئست‌ها ریست شدند.");
+			return;
+		}
+		if (data.startsWith("user_reset_time_")) {
+			const username = decodeURIComponent(data.replace("user_reset_time_", ""));
+			await env.DB.prepare("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE username = ?").bind(username).run();
+			await this.answerAndRefreshUser(env, chatId, messageId, username, "✅ زمان اشتراک ریست شد.");
+			return;
+		}
+		if (data.startsWith("user_config_")) {
+			const username = decodeURIComponent(data.replace("user_config_", ""));
+			await this.sendUserConfig(chatId, env, username);
+			return;
+		}
+		if (data.startsWith("user_delete_confirm_")) {
+			const username = decodeURIComponent(data.replace("user_delete_confirm_", ""));
+			await this.editOrSend(env, chatId, messageId, "⚠️ آیا از حذف کاربر <b>" + username + "</b> مطمئن هستید؟ این عمل غیرقابل بازگشت است.", {
+				inline_keyboard: [
+					[
+						{ text: "✅ بله، حذف کن", callback_data: "user_delete_" + encodeURIComponent(username) },
+						{ text: "❌ انصراف", callback_data: "user_view_" + encodeURIComponent(username) },
+					],
+				],
+			});
+			return;
+		}
+		if (data.startsWith("user_delete_")) {
+			const username = decodeURIComponent(data.replace("user_delete_", ""));
+			await env.DB.prepare("DELETE FROM users WHERE username = ?").bind(username).run();
+			await this.editOrSend(env, chatId, messageId, "🗑️ کاربر <b>" + username + "</b> حذف شد.", this.mainMenuKeyboard());
+			return;
+		}
+		if (data === "user_new") {
+			await this.setSession(env.DB, chatId, "create_user_username", {});
+			await this.editOrSend(env, chatId, messageId, "👤 نام کاربری جدید را ارسال کنید (فقط حروف انگلیسی و عدد):", {
+				inline_keyboard: [[{ text: "❌ انصراف", callback_data: "menu" }]],
+			});
+			return;
+		}
+		if (data === "proxy_menu") {
+			await this.showProxyMenu(chatId, messageId, env);
+			return;
+		}
+		if (data === "proxy_set") {
+			await this.setSession(env.DB, chatId, "set_proxy_ip", {});
+			await this.editOrSend(env, chatId, messageId, "🌐 آدرس یا IP پروکسی جدید را ارسال کنید:\n(مثال: <code>proxyip.cmliussss.net</code>)", {
+				inline_keyboard: [[{ text: "❌ انصراف", callback_data: "proxy_menu" }]],
+			});
+			return;
+		}
+		if (data === "web_login") {
+			await this.sendWebLoginLink(chatId, env);
+			return;
+		}
+		if (data === "restart_core") {
+			await this.editOrSend(env, chatId, messageId, "⚠️ آیا از ری‌استارت هسته ورکر مطمئن هستید؟ تمام اتصالات فعال قطع خواهند شد.", {
+				inline_keyboard: [
+					[
+						{ text: "✅ بله، ری‌استارت کن", callback_data: "restart_core_confirm" },
+						{ text: "❌ انصراف", callback_data: "menu" },
+					],
+				],
+			});
+			return;
+		}
+		if (data === "restart_core_confirm") {
+			await this.doRestartCore(chatId, messageId, env);
+			return;
+		}
+		if (data === "update_panel") {
+			await this.editOrSend(env, chatId, messageId, "⚠️ آیا از بروزرسانی پنل به آخرین نسخه مطمئن هستید؟", {
+				inline_keyboard: [
+					[
+						{ text: "✅ بله، بروزرسانی کن", callback_data: "update_panel_confirm" },
+						{ text: "❌ انصراف", callback_data: "menu" },
+					],
+				],
+			});
+			return;
+		}
+		if (data === "update_panel_confirm") {
+			await this.doUpdatePanel(chatId, messageId, env);
+			return;
+		}
+	},
+	async editOrSend(env, chatId, messageId, text, replyMarkup) {
+		const res = await this.callApi(env, "editMessageText", {
+			chat_id: chatId,
+			message_id: messageId,
+			text,
+			parse_mode: "HTML",
+			disable_web_page_preview: true,
+			reply_markup: replyMarkup,
+		});
+		if (!res.ok) {
+			await this.sendMessage(env, chatId, text, { reply_markup: replyMarkup });
+		}
+	},
+	async answerAndRefreshUser(env, chatId, messageId, username, toastText) {
+		await this.showUserDetail(chatId, messageId, env, username);
+	},
+	async showStats(chatId, messageId, env) {
+		try {
+			await flushExpiredTraffic(env);
+		} catch (e) {}
+		const { results } = await env.DB.prepare("SELECT * FROM users").all();
+		const users = results || [];
+		const now = Date.now();
+		const totalUsers = users.length;
+		const onlineUsers = users.filter((u) => u.last_active && now - u.last_active < 25000).length;
+		const totalGb = users.reduce((sum, u) => sum + (u.used_gb || 0), 0);
+		let cf = { today: 0, total: 0 };
+		try {
+			cf = await getCfUsage(env);
+		} catch (e) {}
+		const text = `📊 <b>آمار پنل ZEUS</b>\n\n👥 کل کاربران: <b>${totalUsers}</b>\n⚡ آنلاین الان: <b>${onlineUsers}</b>\n💾 مصرف کل: <b>${totalGb.toFixed(2)} GB</b>\n📈 ریکوئست امروز (کلودفلر): <b>${cf.today.toLocaleString()}</b>\n📉 ریکوئست کل (۳۰ روز): <b>${cf.total.toLocaleString()}</b>`;
+		await this.editOrSend(env, chatId, messageId, text, {
+			inline_keyboard: [
+				[{ text: "🔄 بروزرسانی", callback_data: "stats" }],
+				[{ text: "⬅️ بازگشت", callback_data: "menu" }],
+			],
+		});
+	},
+	async showUsersList(chatId, messageId, env, page = 0) {
+		const pageSize = 8;
+		const { results } = await env.DB.prepare("SELECT username, is_active, used_gb, limit_gb, last_active FROM users ORDER BY id DESC").all();
+		const users = results || [];
+		if (users.length === 0) {
+			await this.editOrSend(env, chatId, messageId, "کاربری تعریف نشده است.", {
+				inline_keyboard: [
+					[{ text: "➕ ساخت کاربر", callback_data: "user_new" }],
+					[{ text: "⬅️ بازگشت", callback_data: "menu" }],
+				],
+			});
+			return;
+		}
+		const now = Date.now();
+		const totalPages = Math.max(1, Math.ceil(users.length / pageSize));
+		const safePage = Math.min(Math.max(0, page), totalPages - 1);
+		const pageUsers = users.slice(safePage * pageSize, safePage * pageSize + pageSize);
+		const rows = pageUsers.map((u) => {
+			const isOnline = u.last_active && now - u.last_active < 25000;
+			const statusIcon = u.is_active === 0 ? "❌" : isOnline ? "🟢" : "⚪️";
+			return [{ text: `${statusIcon} ${u.username}`, callback_data: "user_view_" + encodeURIComponent(u.username) }];
+		});
+		const navRow = [];
+		if (safePage > 0) navRow.push({ text: "⬅️ قبلی", callback_data: "users_list_" + (safePage - 1) });
+		navRow.push({ text: `📄 ${safePage + 1}/${totalPages}`, callback_data: "users_list_" + safePage });
+		if (safePage < totalPages - 1) navRow.push({ text: "بعدی ➡️", callback_data: "users_list_" + (safePage + 1) });
+		rows.push(navRow);
+		rows.push([{ text: "➕ ساخت کاربر", callback_data: "user_new" }]);
+		rows.push([{ text: "⬅️ بازگشت", callback_data: "menu" }]);
+		await this.editOrSend(env, chatId, messageId, `👥 <b>لیست کاربران</b> (${users.length} کاربر)`, { inline_keyboard: rows });
+	},
+	async showUserDetail(chatId, messageId, env, username) {
+		const user = await env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first();
+		if (!user) {
+			await this.editOrSend(env, chatId, messageId, "❌ کاربر یافت نشد.", { inline_keyboard: [[{ text: "⬅️ بازگشت", callback_data: "users_list_0" }]] });
+			return;
+		}
+		const now = Date.now();
+		const isOnline = user.last_active && now - user.last_active < 25000;
+		let remTime = "نامحدود";
+		if (user.expiry_days && user.created_at) {
+			const created = new Date(user.created_at);
+			const expiryDate = new Date(created.getTime() + user.expiry_days * 86400000);
+			const diffDays = Math.ceil((expiryDate.getTime() - now) / 86400000);
+			remTime = diffDays > 0 ? diffDays + " روز" : "منقضی شده";
+		}
+		const usedGb = (user.used_gb || 0).toFixed(2);
+		const limitGb = user.limit_gb ? user.limit_gb + " GB" : "نامحدود";
+		const usedReq = (user.used_req || 0).toLocaleString();
+		const limitReq = user.limit_req ? user.limit_req.toLocaleString() : "نامحدود";
+		const text =
+			`👤 <b>${user.username}</b>\n` +
+			`وضعیت: ${user.is_active === 0 ? "❌ غیرفعال" : isOnline ? "🟢 آنلاین" : "⚪️ آفلاین"}\n` +
+			`UUID: <code>${user.uuid}</code>\n` +
+			`حجم: ${usedGb} / ${limitGb} GB\n` +
+			`ریکوئست: ${usedReq} / ${limitReq}\n` +
+			`اعتبار زمانی باقی‌مانده: ${remTime}\n` +
+			`پورت: <code>${user.port || "-"}</code>`;
+		await this.editOrSend(env, chatId, messageId, text, {
+			inline_keyboard: [
+				[
+					{ text: user.is_active === 0 ? "✅ فعال‌سازی" : "⛔️ غیرفعال‌سازی", callback_data: "user_toggle_" + encodeURIComponent(username) },
+					{ text: "🚀 دریافت کانفیگ", callback_data: "user_config_" + encodeURIComponent(username) },
+				],
+				[
+					{ text: "🔄 ریست حجم", callback_data: "user_reset_volume_" + encodeURIComponent(username) },
+					{ text: "🔄 ریست ریکوئست", callback_data: "user_reset_req_" + encodeURIComponent(username) },
+					{ text: "🔄 ریست زمان", callback_data: "user_reset_time_" + encodeURIComponent(username) },
+				],
+				[{ text: "🗑️ حذف کاربر", callback_data: "user_delete_confirm_" + encodeURIComponent(username) }],
+				[{ text: "⬅️ بازگشت به لیست", callback_data: "users_list_0" }],
+			],
+		});
+	},
+	async sendUserConfig(chatId, env, username) {
+		const user = await env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first();
+		if (!user) {
+			await this.sendMessage(env, chatId, "❌ کاربر یافت نشد.");
+			return;
+		}
+		const subLink = "توجه: هاست پنل برای ساخت لینک ساب لازم است. از پنل وب برای دریافت لینک کامل استفاده کنید یا از دستور زیر برای دریافت کانفیگ متنی استفاده کنید.";
+		const text = `⚙️ <b>اطلاعات کاربر ${user.username}</b>\n\nUUID:\n<code>${user.uuid}</code>\n\nبرای گرفتن لینک ساب و QR کامل، از پنل وب (دکمه «ورود به پنل وب») استفاده کنید و کاربر مربوطه را باز کنید.`;
+		await this.sendMessage(env, chatId, text);
+	},
+	async showProxyMenu(chatId, messageId, env) {
+		const rowIp = await env.DB.prepare("SELECT value FROM settings WHERE key = 'proxy_ip'").first();
+		const currentIp = rowIp ? rowIp.value : "proxyip.cmliussss.net";
+		await this.editOrSend(env, chatId, messageId, `🌐 <b>تنظیمات پروکسی IP</b>\n\nمقدار فعلی:\n<code>${currentIp}</code>`, {
+			inline_keyboard: [
+				[{ text: "✏️ تغییر آی‌پی پروکسی", callback_data: "proxy_set" }],
+				[{ text: "⬅️ بازگشت", callback_data: "menu" }],
+			],
+		});
+	},
+	async sendWebLoginLink(chatId, env) {
+		const hasPassword = await DbService.getPanelPassword(env.DB);
+		if (!hasPassword) {
+			await this.sendMessage(env, chatId, "⚠️ پنل هنوز رمز عبور ندارد. ابتدا از طریق آدرس ورکر وارد شده و رمز عبور تعیین کنید.");
+			return;
+		}
+		const token = crypto.randomUUID().replace(/-/g, "");
+		try {
+			await env.DB.prepare("DELETE FROM tg_links WHERE chat_id = ?").bind(String(chatId)).run();
+			await env.DB.prepare("INSERT INTO tg_links (chat_id, token, created_at) VALUES (?, ?, ?)").bind(String(chatId), token, Date.now()).run();
+		} catch (e) {
+			await this.sendMessage(env, chatId, "خطا در ساخت لینک ورود.");
+			return;
+		}
+		const workerName = env.WORKER_NAME || "";
+		let baseUrl = "";
+		if (workerName) {
+			baseUrl = `https://${workerName}.workers.dev`;
+		}
+		const hint = baseUrl
+			? `${baseUrl}/tg-login?token=${token}`
+			: "برای دریافت لینک آماده، متغیر WORKER_NAME را در ورکر تنظیم کنید. در غیر این صورت آدرس زیر را با دامنه پنل خودتان جایگزین کنید:\n\n<code>https://YOUR-DOMAIN/tg-login?token=" + token + "</code>";
+		await this.sendMessage(env, chatId, "🔐 <b>لینک ورود یک‌بار مصرف</b> (اعتبار: ۵ دقیقه)\n\n" + hint);
+	},
+	async doRestartCore(chatId, messageId, env) {
+		const currentToken = env.CF_API_TOKEN;
+		const currentAccountId = env.CF_ACCOUNT_ID;
+		if (!currentToken || !currentAccountId) {
+			await this.editOrSend(env, chatId, messageId, "⚠️ برای ری‌استارت از راه دور، ابتدا باید یک‌بار از طریق پنل وب توکن Cloudflare را ثبت کنید (دکمه ری‌استارت هسته در پنل وب).", {
+				inline_keyboard: [[{ text: "⬅️ بازگشت", callback_data: "menu" }]],
+			});
+			return;
+		}
+		await this.editOrSend(env, chatId, messageId, "⏳ در حال ری‌استارت هسته ورکر...", null);
+		try {
+			await DeployService.redeployLatest(env.WORKER_NAME ? env.WORKER_NAME + ".workers.dev" : "workers.dev", env, currentToken, currentAccountId);
+			await this.editOrSend(env, chatId, messageId, "✅ هسته ورکر با موفقیت ری‌استارت شد.", this.mainMenuKeyboard());
+		} catch (err) {
+			await this.editOrSend(env, chatId, messageId, "❌ خطا در ری‌استارت: " + err.message, this.mainMenuKeyboard());
+		}
+	},
+	async doUpdatePanel(chatId, messageId, env) {
+		let currentToken = env.CF_API_TOKEN;
+		let currentAccountId = env.CF_ACCOUNT_ID;
+		if (!currentToken) {
+			await this.editOrSend(env, chatId, messageId, "⚠️ برای بروزرسانی از راه دور، ابتدا باید یک‌بار از طریق پنل وب توکن Cloudflare را ثبت کنید (دکمه بروزرسانی در پنل وب).", {
+				inline_keyboard: [[{ text: "⬅️ بازگشت", callback_data: "menu" }]],
+			});
+			return;
+		}
+		await this.editOrSend(env, chatId, messageId, "⏳ در حال بروزرسانی پنل به آخرین نسخه...", null);
+		try {
+			if (!currentAccountId) {
+				const accRes = await fetch("https://api.cloudflare.com/client/v4/accounts", {
+					headers: { Authorization: "Bearer " + currentToken },
+				});
+				const accData = await accRes.json();
+				if (!accData.success || accData.result.length === 0) throw new Error("توکن نامعتبر است یا اکانتی یافت نشد.");
+				currentAccountId = accData.result[0].id;
+			}
+			await DeployService.redeployLatest(env.WORKER_NAME ? env.WORKER_NAME + ".workers.dev" : "workers.dev", env, currentToken, currentAccountId);
+			await this.editOrSend(env, chatId, messageId, "✅ پنل با موفقیت بروزرسانی شد.", this.mainMenuKeyboard());
+		} catch (err) {
+			await this.editOrSend(env, chatId, messageId, "❌ خطا در بروزرسانی: " + err.message, this.mainMenuKeyboard());
+		}
+	},
+	async handleStatefulInput(chatId, text, session, env, ctx) {
+		const { state, data } = session;
+		if (state === "create_user_username") {
+			const username = text.trim();
+			if (!/^[a-zA-Z0-9_.-]{2,32}$/.test(username)) {
+				await this.sendMessage(env, chatId, "⚠️ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد، نقطه، خط تیره و آندرلاین مجاز است (۲ تا ۳۲ کاراکتر). دوباره ارسال کنید یا /cancel را بزنید.");
+				return;
+			}
+			const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
+			if (existing) {
+				await this.sendMessage(env, chatId, "⚠️ این نام کاربری از قبل وجود دارد. نام دیگری ارسال کنید یا /cancel را بزنید.");
+				return;
+			}
+			await this.setSession(env.DB, chatId, "create_user_limit_gb", { username });
+			await this.sendMessage(env, chatId, "📦 حجم مجاز به GB را ارسال کنید (برای نامحدود عدد 0 را ارسال کنید):");
+			return;
+		}
+		if (state === "create_user_limit_gb") {
+			const val = parseFloat(text.trim());
+			const limitGb = !isNaN(val) && val > 0 ? val : null;
+			await this.setSession(env.DB, chatId, "create_user_expiry", { ...data, limitGb });
+			await this.sendMessage(env, chatId, "📅 مدت اعتبار به روز را ارسال کنید (برای نامحدود عدد 0 را ارسال کنید):");
+			return;
+		}
+		if (state === "create_user_expiry") {
+			const val = parseInt(text.trim(), 10);
+			const expiryDays = !isNaN(val) && val > 0 ? val : null;
+			const username = data.username;
+			const finalUuid = crypto.randomUUID();
+			try {
+				await env.DB.prepare(
+					"INSERT INTO users (username, uuid, limit_gb, expiry_days, connection_type, tls, port, fingerprint, ip_limit, max_connections, used_gb, used_req, created_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1)",
+				)
+					.bind(username, finalUuid, data.limitGb, expiryDays, atob("dmxlc3M="), "on", "443,80", "chrome", null, null, new Date().toISOString())
+					.run();
+				await this.clearSession(env.DB, chatId);
+				await this.sendMessage(env, chatId, `✅ کاربر <b>${username}</b> با موفقیت ساخته شد.\n\nUUID:\n<code>${finalUuid}</code>\n\nبرای گرفتن کانفیگ و لینک ساب کامل، از پنل وب استفاده کنید.`, {
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: "👁 مشاهده کاربر", callback_data: "user_view_" + encodeURIComponent(username) }],
+							[{ text: "⬅️ منو", callback_data: "menu" }],
+						],
+					},
+				});
+			} catch (err) {
+				await this.clearSession(env.DB, chatId);
+				await this.sendMessage(env, chatId, "❌ خطا در ساخت کاربر: " + err.message);
+			}
+			return;
+		}
+		if (state === "set_proxy_ip") {
+			const proxyIp = text.trim();
+			if (!proxyIp) {
+				await this.sendMessage(env, chatId, "⚠️ مقدار نامعتبر است. دوباره ارسال کنید یا /cancel را بزنید.");
+				return;
+			}
+			try {
+				await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('proxy_ip', ?)").bind(proxyIp).run();
+				await this.clearSession(env.DB, chatId);
+				await this.sendMessage(env, chatId, "✅ آی‌پی پروکسی به‌روزرسانی شد:\n<code>" + proxyIp + "</code>", { reply_markup: this.mainMenuKeyboard() });
+			} catch (err) {
+				await this.sendMessage(env, chatId, "❌ خطا در ذخیره‌سازی: " + err.message);
+			}
+			return;
+		}
+		await this.clearSession(env.DB, chatId);
+		await this.sendMessage(env, chatId, "متوجه نشدم. از منو استفاده کنید:", { reply_markup: this.mainMenuKeyboard() });
 	},
 };
 async function flushExpiredTraffic(env) {
@@ -2045,35 +2605,7 @@ const HTML_TEMPLATES = {
             <button type="submit" id="submit-btn" class="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-sm transition font-bold">ثبت و ورود</button>
         </form>
     </div>
-    <div id="toast-container" class="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 pointer-events-none"></div>
     <script>
-        function showToast(message, type = 'success') {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            const colors = type === 'error' 
-                ? 'bg-red-50 dark:bg-red-900/40 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400' 
-                : 'bg-emerald-50 dark:bg-emerald-900/40 border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400';
-            toast.className = 'px-4 py-3 border rounded-xl shadow-lg font-bold text-sm transform transition-all duration-300 -translate-y-full opacity-0 ' + colors;
-            toast.innerText = message;
-            container.appendChild(toast);
-            requestAnimationFrame(() => {
-                toast.classList.remove('-translate-y-full', 'opacity-0');
-            });
-            setTimeout(() => {
-                toast.classList.add('-translate-y-full', 'opacity-0');
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
-        }
-
-        window.alert = function(message) {
-            const msgStr = message ? message.toString() : '';
-            if (msgStr.includes('خطا') || msgStr.includes('⚠️') || msgStr.includes('❌')) {
-                showToast(msgStr, 'error');
-            } else {
-                showToast(msgStr, 'success');
-            }
-        };
-
         async function handleSetup(event) {
             event.preventDefault();
             const password = document.getElementById('password').value;
@@ -2094,9 +2626,7 @@ const HTML_TEMPLATES = {
                 const data = await res.json();
                 if (res.ok && data.success) {
                     alert('✅ رمز عبور با موفقیت تنظیم شد. در حال ورود...');
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1500);
+                    window.location.reload();
                 } else {
                     alert('خطا: ' + (data.error || 'عملیات ناموفق بود'));
                 }
@@ -2168,35 +2698,7 @@ const HTML_TEMPLATES = {
             </form>
         </div>
     </div>
-    <div id="toast-container" class="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 pointer-events-none"></div>
     <script>
-        function showToast(message, type = 'success') {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            const colors = type === 'error' 
-                ? 'bg-red-50 dark:bg-red-900/40 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400' 
-                : 'bg-emerald-50 dark:bg-emerald-900/40 border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400';
-            toast.className = 'px-4 py-3 border rounded-xl shadow-lg font-bold text-sm transform transition-all duration-300 -translate-y-full opacity-0 ' + colors;
-            toast.innerText = message;
-            container.appendChild(toast);
-            requestAnimationFrame(() => {
-                toast.classList.remove('-translate-y-full', 'opacity-0');
-            });
-            setTimeout(() => {
-                toast.classList.add('-translate-y-full', 'opacity-0');
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
-        }
-
-        window.alert = function(message) {
-            const msgStr = message ? message.toString() : '';
-            if (msgStr.includes('خطا') || msgStr.includes('⚠️') || msgStr.includes('❌')) {
-                showToast(msgStr, 'error');
-            } else {
-                showToast(msgStr, 'success');
-            }
-        };
-
         async function handleLogin(event) {
             event.preventDefault();
             const password = document.getElementById('password').value;
@@ -2212,7 +2714,7 @@ const HTML_TEMPLATES = {
                 if (res.ok && data.success) {
                     window.location.reload();
                 } else {
-                    alert('❌ رمز عبور اشتباه است');
+                    alert('رمز عبور اشتباه است');
                 }
             } catch (err) {
                 alert('خطا در ارتباط با سرور');
@@ -2229,7 +2731,6 @@ const HTML_TEMPLATES = {
             const apiToken = document.getElementById('api-token').value;
             const btn = document.getElementById('recover-btn');
             btn.disabled = true;
-            btn.innerText = 'در حال بررسی...';
             try {
                 const res = await fetch('/api/recover', {
                     method: 'POST',
@@ -2238,18 +2739,15 @@ const HTML_TEMPLATES = {
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
-                    alert('✅ رمز عبور با موفقیت حذف شد. در حال انتقال به صفحه تنظیمات اولیه...');
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1500);
+                    alert('رمز عبور با موفقیت حذف شد. در حال انتقال به صفحه تنظیمات اولیه...');
+                    window.location.reload();
                 } else {
-                    alert('❌ ' + (data.error || 'خطا در تایید اطلاعات'));
+                    alert(data.error || 'خطا در تایید اطلاعات');
                 }
             } catch (err) {
                 alert('خطا در ارتباط با سرور');
             } finally {
                 btn.disabled = false;
-                btn.innerText = 'بازیابی رمز پنل';
             }
         }
     </script>
@@ -2549,6 +3047,7 @@ const HTML_TEMPLATES = {
                         <th class="p-2 w-10 text-center"><input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this)" class="w-5 h-5 rounded-md border-2 border-gray-300 dark:border-zinc-700 text-blue-600 bg-white dark:bg-zinc-800 checked:bg-blue-600 checked:border-blue-600 focus:ring-blue-500/50 focus:ring-offset-0 transition-all duration-200 cursor-pointer hover:scale-105 active:scale-95"></th>
                         <th class="p-4">نام کاربر و عملیات</th>
                         <th class="p-2 border-r border-gray-200 dark:border-zinc-800">لینک ساب</th>
+                        <th class="p-2 border-r border-gray-200 dark:border-zinc-800">پروتکل</th>
                         <th class="p-2 border-r border-gray-200 dark:border-zinc-800">پورت</th>
                         <th class="p-2 border-r border-gray-200 dark:border-zinc-800">حجم</th>
                         <th class="p-2 border-r border-gray-200 dark:border-zinc-800">ریکوئست</th>
@@ -2625,7 +3124,7 @@ const HTML_TEMPLATES = {
                             <span class="absolute inset-y-0 right-0 flex items-center pr-3.5 pointer-events-none text-gray-400">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                             </span>
-                            <input type="text" id="input-name" placeholder="ali" maxlength="32" class="w-full pl-3 pr-10 py-2.5 bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm font-semibold text-gray-800 dark:text-zinc-100 placeholder-gray-400/80 transition" required>
+                            <input type="text" id="input-name" placeholder="ali" class="w-full pl-3 pr-10 py-2.5 bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm font-semibold text-gray-800 dark:text-zinc-100 placeholder-gray-400/80 transition" required>
                         </div>
                     </div>
                     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -2741,21 +3240,17 @@ const HTML_TEMPLATES = {
                             </div>
                         </div>
                     </div>
-						<div class="grid grid-cols-2 gap-2 mt-3">
-    						<div class="flex items-center justify-between bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 shadow-sm">
-    						    <span class="text-[10px] sm:text-xs font-semibold text-gray-700 dark:text-zinc-300 whitespace-nowrap pl-1">NSFW Blacker</span>
-    						    <label class="relative inline-flex items-center cursor-pointer scale-[0.65] sm:scale-75 origin-left">
-    						        <input type="checkbox" id="input-block-porn" class="sr-only peer">
-    						        <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer dark:bg-zinc-700 peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-rose-500"></div>
-    						    </label>
-    						</div>
-    						<div class="flex items-center justify-between bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 shadow-sm">
-    						    <span class="text-[10px] sm:text-xs font-semibold text-gray-700 dark:text-zinc-300 whitespace-nowrap pl-1">ADS blocker</span>
-    						    <label class="relative inline-flex items-center cursor-pointer scale-[0.65] sm:scale-75 origin-left">
-    						        <input type="checkbox" id="input-block-ads" class="sr-only peer">
-    						        <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer dark:bg-zinc-700 peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-500"></div>
-    						    </label>
-    						</div>
+						<div class="flex flex-row flex-wrap items-center justify-center gap-6 pt-4 border-t border-gray-100 dark:border-zinc-900 mt-4">
+    						<label class="relative inline-flex items-center cursor-pointer select-none">
+        						<input type="checkbox" id="input-block-porn" class="sr-only peer">
+        						<div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-zinc-700 peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-emerald-500"></div>
+        						<span class="mr-3 text-sm font-bold text-gray-700 dark:text-zinc-300">&#x645;&#x633;&#x62F;&#x648;&#x62F; &#x633;&#x627;&#x632;&#x6CC; &#x67E;&#x648;&#x631;&#x646;&#x648;&#x6AF;&#x631;&#x627;&#x641;&#x6CC;</span>
+    						</label>
+    						<label class="relative inline-flex items-center cursor-pointer select-none">
+        						<input type="checkbox" id="input-block-ads" class="sr-only peer">
+        						<div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-zinc-700 peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-emerald-500"></div>
+        						<span class="mr-3 text-sm font-bold text-gray-700 dark:text-zinc-300">&#x645;&#x633;&#x62F;&#x648;&#x62F; &#x633;&#x627;&#x632;&#x6CC; &#x62A;&#x628;&#x644;&#x6CC;&#x63A;&#x627;&#x62A;</span>
+    						</label>
 						</div>
                 </div>
                 <div class="pt-4 flex gap-3">
@@ -2807,11 +3302,8 @@ const HTML_TEMPLATES = {
             <div class="p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain">
                 <div>
                     <label class="block text-sm font-medium mb-1.5 text-gray-700 dark:text-zinc-300">موقعیت جغرافیایی پروکسی (Cloudflare)</label>
-                    <div class="mb-2">
-                        <input type="text" id="location-search" oninput="filterLocations()" placeholder="جستجوی شهر، کشور یا IATA..." class="w-full px-3 py-2 bg-white dark:bg-amoled-input border border-gray-300 dark:border-amoled-border rounded-lg shadow-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 dark:text-zinc-200 transition">
-                    </div>
                     <div class="relative">
-                        <select id="location-select" class="w-full pl-8 pr-3 py-2.5 bg-white dark:bg-amoled-input border border-gray-300 dark:border-amoled-border rounded-lg shadow-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 dark:text-zinc-200 cursor-pointer appearance-none">
+                        <select id="location-select" class="w-full pl-8 pr-3 py-2.5 bg-white dark:bg-amoled-input border border-gray-300 dark:border-amoled-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 dark:text-zinc-200 cursor-pointer appearance-none">
                             <option value="">در حال بارگذاری...</option>
                         </select>
                         <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 dark:text-zinc-400">
@@ -2879,39 +3371,40 @@ const HTML_TEMPLATES = {
         </div>
     </div>
 <div id="update-modal" class="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm opacity-0 pointer-events-none transition-all duration-300 ease-out">
-    <div class="w-full max-w-md bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-3xl shadow-2xl overflow-hidden p-6 text-center transition-all transform duration-300 opacity-0 scale-95 ease-out">
-        <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-500 mb-4 shadow-inner">
-            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-        </div>
-        <h3 class="font-black text-xl text-gray-900 dark:text-white mb-2">بروزرسانی پنل</h3>
-        <p id="update-modal-text" class="text-sm text-gray-600 dark:text-gray-400 mb-6 leading-relaxed font-medium">
-            نسخه جدید در دسترس است. اگر آپدیت خودکار جواب نداد، حتماً از طریق لینک زیر آپدیت دستی را انجام دهید.
-        </p>
-        <div class="space-y-3">
-            <button onclick="applyUpdate()" class="w-full py-3.5 bg-blue-50 dark:bg-blue-950/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-blue-600 dark:text-blue-500 border border-blue-300 dark:border-blue-500 font-black rounded-xl text-sm transition duration-300 shadow-sm flex items-center justify-center gap-2">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                آپدیت خودکار (توصیه شده)
-            </button>
-            <div class="relative py-2">
-                <div class="absolute inset-0 flex items-center">
-                    <div class="w-full border-t border-gray-200 dark:border-zinc-800"></div>
-                </div>
-                <div class="relative flex justify-center text-xs">
-                    <span class="bg-white dark:bg-amoled-card px-2 text-gray-400">یا</span>
-                </div>
+        <div class="w-full max-w-md bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-3xl shadow-2xl overflow-hidden p-6 text-center transition-all transform duration-300 opacity-0 scale-95 ease-out">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-500 mb-4 shadow-inner">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
             </div>
-            <a href="https://zeus-panel.ir-netlify.workers.dev/" target="_blank" class="w-full py-3.5 bg-orange-50 dark:bg-orange-950/30 hover:bg-orange-100 dark:hover:bg-orange-900/50 text-orange-600 dark:text-orange-500 border border-orange-300 dark:border-orange-500 font-bold rounded-xl text-sm transition duration-300 shadow-sm flex items-center justify-center gap-2">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                </svg>
-                آپدیت دستی (رفتن به سایت)
-            </a>
+            <h3 class="font-black text-xl text-gray-900 dark:text-white mb-2">بروزرسانی پنل</h3>
+            <p id="update-modal-text" class="text-sm text-gray-600 dark:text-gray-400 mb-6 leading-relaxed font-medium">
+                نسخه جدید در دسترس است. اگر آپدیت خودکار جواب نداد، حتماً از طریق لینک زیر آپدیت دستی را انجام دهید.
+            </p>
+            <div class="space-y-3">
+                <button onclick="applyUpdate()" class="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-xl text-sm transition duration-300 shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    آپدیت خودکار (توصیه شده)
+                </button>
+                <div class="relative py-2">
+                    <div class="absolute inset-0 flex items-center">
+                        <div class="w-full border-t border-gray-200 dark:border-zinc-800"></div>
+                    </div>
+                    <div class="relative flex justify-center text-xs">
+                        <span class="bg-white dark:bg-amoled-card px-2 text-gray-400">یا</span>
+                    </div>
+                </div>
+                <a href="https://zeus-panel.ir-netlify.workers.dev/" target="_blank" class="w-full py-3.5 bg-orange-500 hover:bg-orange-600 dark:bg-orange-600 dark:hover:bg-orange-500 text-white font-bold rounded-xl text-sm transition duration-300 flex items-center justify-center gap-2 border border-orange-400 dark:border-orange-500 shadow-sm">
+                    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                    </svg>
+                    آپدیت دستی (رفتن به سایت)
+                </a>
+            </div>
+            <button onclick="toggleUpdateModal(false)" 
+                    class="mt-5 w-full py-3.5 bg-red-500 hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500 text-white font-bold rounded-xl text-sm transition duration-300 flex items-center justify-center border border-red-400 dark:border-red-500 shadow-sm">
+                انصراف
+            </button>
         </div>
-        <button onclick="toggleUpdateModal(false)" class="mt-5 w-full py-3.5 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-600 dark:text-red-500 border border-red-300 dark:border-red-500 font-bold rounded-xl text-sm transition duration-300 shadow-sm flex items-center justify-center">
-            انصراف
-        </button>
     </div>
-</div>
 	<div id="token-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 opacity-0 pointer-events-none transition-opacity duration-200 ease-out">
         <div id="token-modal-card" class="w-full max-w-md bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-3xl shadow-2xl p-6 transform transition-all scale-95 opacity-0 duration-200">
             <div class="flex justify-between items-center mb-6">
@@ -3989,6 +4482,7 @@ const HTML_TEMPLATES = {
 							        '</div>' +
 							    '</div>' +
 							'</td>' +
+							'<td class="p-2 border-r border-gray-100 dark:border-zinc-800 text-xs font-mono uppercase text-blue-500 font-semibold text-center">VLESS</td>' +
 							'<td class="p-2 border-r border-gray-100 dark:border-zinc-800 text-xs">' + 
 							    '<div class="grid grid-flow-col grid-rows-5 gap-1.5 w-fit mx-auto">' +
 							        String(user.port || "").split(",").map(function(p) {
@@ -4391,23 +4885,6 @@ async function saveSettings() {
         btn.innerText = 'ذخیره تنظیمات';
     }
 }
-window.filterLocations = function() {
-    const searchTerm = document.getElementById('location-search').value.toLowerCase().trim();
-    const cachedLocations = localStorage.getItem('cached_locations_list');
-    const activeIata = localStorage.getItem('cached_active_iata') || '';
-    
-    if (!cachedLocations) return;
-    
-    try {
-        const allLocations = JSON.parse(cachedLocations);
-        const filteredLocations = allLocations.filter(loc => {
-            if (!loc.iata || !loc.city) return false;
-            const searchString = (loc.iata + ' ' + loc.city + ' ' + (loc.cca2 || '')).toLowerCase();
-            return searchString.includes(searchTerm);
-        });
-        renderLocationsUI(filteredLocations, activeIata);
-    } catch(e) {}
-};
         function exportUsersBackup() {
             if (!window.allUsers || window.allUsers.length === 0) {
                 alert('⚠️ کاربری برای پشتیبان‌گیری وجود ندارد!');
@@ -4583,7 +5060,7 @@ window.filterLocations = function() {
                 window.location.reload();
             }
         }
-const CURRENT_VERSION = '1.6.7';
+const CURRENT_VERSION = '1.6.6';
 const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
 		async function checkForUpdates(isManual = false) {
             try {
