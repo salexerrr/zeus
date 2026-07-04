@@ -28,6 +28,7 @@ export default {
 			} catch (e) {}
 		}
 		const url = new URL(request.url);
+		rememberPanelHostname(env, url.hostname, ctx);
 		if (request.method === "POST" && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_WEBHOOK_SECRET && url.pathname === "/tg/" + env.TELEGRAM_WEBHOOK_SECRET) {
 			return await TelegramBot.handleUpdate(request, env, ctx);
 		}
@@ -516,6 +517,26 @@ const Router = {
 };
 let schemaEnsured = false;
 let cachedPanelPassword = null;
+let cachedPanelHostname = null;
+function rememberPanelHostname(env, hostname, ctx) {
+	if (!hostname) return;
+	const bogusHosts = ["localhost", "127.0.0.1", "0.0.0.0"];
+	if (bogusHosts.includes(hostname)) return;
+	if (cachedPanelHostname === hostname) return;
+	const task = async () => {
+		try {
+			const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'panel_hostname'").first();
+			if (row && row.value === hostname) {
+				cachedPanelHostname = hostname;
+				return;
+			}
+			await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('panel_hostname', ?) ON CONFLICT(key) DO UPDATE SET value = ?").bind(hostname, hostname).run();
+			cachedPanelHostname = hostname;
+		} catch (e) {}
+	};
+	if (ctx) ctx.waitUntil(task());
+	else task();
+}
 const DbService = {
 	async ensureSchema(db) {
 		if (schemaEnsured) return;
@@ -1215,6 +1236,14 @@ const TelegramBot = {
 			],
 		});
 	},
+	async getKnownPanelHostname(env) {
+		try {
+			const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'panel_hostname'").first();
+			return row && row.value ? row.value : "";
+		} catch (e) {
+			return "";
+		}
+	},
 	async sendWebLoginLink(chatId, env) {
 		const hasPassword = await DbService.getPanelPassword(env.DB);
 		if (!hasPassword) {
@@ -1229,14 +1258,10 @@ const TelegramBot = {
 			await this.sendMessage(env, chatId, "خطا در ساخت لینک ورود.");
 			return;
 		}
-		const workerName = env.WORKER_NAME || "";
-		let baseUrl = "";
-		if (workerName) {
-			baseUrl = `https://${workerName}.workers.dev`;
-		}
-		const hint = baseUrl
-			? `${baseUrl}/tg-login?token=${token}`
-			: "برای دریافت لینک آماده، متغیر WORKER_NAME را در ورکر تنظیم کنید. در غیر این صورت آدرس زیر را با دامنه پنل خودتان جایگزین کنید:\n\n<code>https://YOUR-DOMAIN/tg-login?token=" + token + "</code>";
+		const hostname = await this.getKnownPanelHostname(env);
+		const hint = hostname
+			? `https://${hostname}/tg-login?token=${token}`
+			: "⚠️ آدرس پنل هنوز شناسایی نشده است. یک‌بار آدرس پنل خودتان را در مرورگر باز کنید (همان که در قسمت بالای Preview صفحه‌ی ادیت ورکر می‌بینید یا دامنه‌ی اختصاصی‌تان) تا سیستم آن را ثبت کند، سپس دوباره این دکمه را بزنید.";
 		await this.sendMessage(env, chatId, "🔐 <b>لینک ورود یک‌بار مصرف</b> (اعتبار: ۵ دقیقه)\n\n" + hint);
 	},
 	async doRestartCore(chatId, messageId, env) {
